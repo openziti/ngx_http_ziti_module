@@ -9,6 +9,8 @@ Learn about Ziti at [ziti.dev](https://ziti.dev)
 
 *This module is not distributed with the Nginx source.* See [the installation instructions](#installation).
 
+<img src="https://ziti-logo.s3.amazonaws.com/ngx.png" width="800" />
+
 Table of Contents
 =================
 
