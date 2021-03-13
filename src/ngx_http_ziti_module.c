@@ -232,8 +232,6 @@ ngx_http_ziti_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t                  *value = cf->args->elts;
     ngx_conf_str_t              servicename;
 
-    dd("entered, zlcf is: %p", zlcf);
-
     if (zlcf->servicename != NULL) {
         return "is duplicate";
     }
@@ -243,7 +241,7 @@ ngx_http_ziti_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    dd("zlcf->servicename is: %s", servicename.sv.data);
+    ZITI_LOG(INFO, "servicename is: %s", servicename.sv.data);
 
     zlcf->servicename = strdup((char*)servicename.sv.data);  
 
@@ -298,6 +296,8 @@ static void on_ziti_event(ziti_context _ztx, const ziti_event_t *event) {
         else {
 
             ZITI_LOG(ERROR, "Failed to connect to controller: %s", event->event.ctx.err);
+
+            exit(-1);
         }
         break;
 
@@ -311,10 +311,6 @@ ngx_int_t
 ngx_http_ziti_start_uv_loop(ngx_http_ziti_loc_conf_t *zlcf, ngx_log_t *log)
 {
     ngx_int_t                      rc;
-    // ngx_thread_pool_t             *tp;
-
-    // ngx_http_ziti_await_init_thread_ctx_t *await_init_thread_ctx;
-    // ngx_thread_task_t             *task_awaitInit;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, log, 0, "ngx_http_ziti_start_uv_loop: entered");
 
