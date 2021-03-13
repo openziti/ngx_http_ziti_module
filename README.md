@@ -11,6 +11,14 @@ Learn about Ziti at [ziti.dev](https://ziti.dev)
 
 <img src="https://ziti-logo.s3.amazonaws.com/ngx.png" width="800" />
 
+
+[![Last Commit](https://img.shields.io/github/last-commit/openziti/ngx_http_ziti_module)]() 
+[![Issues](https://img.shields.io/github/issues-raw/openziti/ziti-http-agent)]()
+[![LOC](https://img.shields.io/tokei/lines/github/openziti/ngx_http_ziti_module)]()
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=rounded)](CONTRIBUTING.md)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.0%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md)
+
 Table of Contents
 =================
 
