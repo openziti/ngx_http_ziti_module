@@ -12,7 +12,7 @@
 #include <ziti/ziti.h>
 #include <uv.h>
 #include <ziti/ziti_src.h>
-
+#include <ziti/ziti_log.h>
 
 
 #ifndef NGX_HTTP_GONE

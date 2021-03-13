@@ -25,8 +25,6 @@ static char *ngx_http_ziti_thread_pool(ngx_conf_t *cf, ngx_command_t *cmd, void 
 static void *ngx_http_ziti_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_ziti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 
-static void on_ziti_event(ziti_context _ztx, const ziti_event_t *event);
-
 
 /* config directives for ngx_http_ziti module */
 static ngx_command_t ngx_http_ziti_cmds[] = {
@@ -110,8 +108,12 @@ ngx_ziti_http_method_t ngx_ziti_http_methods[] = {
 };
 
 
-
 uv_loop_t *uv_thread_loop;
+
+static const char *ALL_CONFIG_TYPES[] = {
+        "all",
+        NULL
+};
 
 
 /**
@@ -122,10 +124,7 @@ ngx_http_ziti_preconfiguration(ngx_conf_t *cf)
 {
     ngx_thread_pool_t          *tp;
 
-    dd("entered, cf: %p", cf);
-
     tp = ngx_thread_pool_add(cf, &ngx_http_ziti_thread_pool_name);
-    dd("thread_pool is: %p", tp);
 
     if (tp == NULL) {
         return NGX_ERROR;
@@ -233,8 +232,6 @@ ngx_http_ziti_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t                  *value = cf->args->elts;
     ngx_conf_str_t              servicename;
 
-    dd("entered, zlcf is: %p", zlcf);
-
     if (zlcf->servicename != NULL) {
         return "is duplicate";
     }
@@ -244,7 +241,7 @@ ngx_http_ziti_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    dd("zlcf->servicename is: %s", servicename.sv.data);
+    ZITI_LOG(INFO, "servicename is: %s", servicename.sv.data);
 
     zlcf->servicename = strdup((char*)servicename.sv.data);  
 
@@ -256,6 +253,95 @@ ngx_http_ziti_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+static void 
+nop(uv_async_t *handle, int status) { }
+
+
+static void 
+uv_thread_loop_func(void *data){
+    uv_loop_t *thread_loop = (uv_loop_t *) data;
+
+    //Start the loop
+    uv_run(thread_loop, UV_RUN_DEFAULT);
+}
+
+
+/**
+ * 
+ */
+static void on_ziti_event(ziti_context _ztx, const ziti_event_t *event) {
+
+    ngx_http_ziti_loc_conf_t *zlcf;
+
+    switch (event->type) {
+
+    case ZitiContextEvent:
+
+        zlcf = (ngx_http_ziti_loc_conf_t*)ziti_app_ctx(_ztx);
+
+        // Save the global ztx context variable in the zlcf
+        zlcf->ztx = _ztx;
+
+        if (event->event.ctx.ctrl_status == ZITI_OK) {
+
+            const ziti_version *ctrl_ver = ziti_get_controller_version(_ztx);
+            const ziti_identity *proxy_id = ziti_get_identity(_ztx);
+
+            ZITI_LOG(INFO, "controller version = %s(%s)[%s]", ctrl_ver->version, ctrl_ver->revision, ctrl_ver->build_date);
+            ZITI_LOG(INFO, "identity = <%s>[%s]@%s", proxy_id->name, proxy_id->id, ziti_get_controller(zlcf->ztx));
+
+            zlcf->state = ZS_LOC_ZITI_INIT_COMPLETED;
+
+        }
+        else {
+
+            ZITI_LOG(ERROR, "Failed to connect to controller: %s", event->event.ctx.err);
+
+            exit(-1);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+
+ngx_int_t
+ngx_http_ziti_start_uv_loop(ngx_http_ziti_loc_conf_t *zlcf, ngx_log_t *log)
+{
+    ngx_int_t                      rc;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, log, 0, "ngx_http_ziti_start_uv_loop: entered");
+
+    zlcf->ztx = NGX_CONF_UNSET_PTR;
+    zlcf->uv_thread_loop = uv_loop_new();
+    uv_async_init(zlcf->uv_thread_loop, &zlcf->async, (uv_async_cb)nop);
+
+    // Create the libuv thread loop
+    zlcf->uv_thread_loop = uv_loop_new();
+    uv_async_init(zlcf->uv_thread_loop, &zlcf->async, (uv_async_cb)nop);
+    uv_thread_create(&zlcf->thread, (uv_thread_cb)uv_thread_loop_func, zlcf->uv_thread_loop);
+
+    ziti_options *opts = ngx_calloc(sizeof(ziti_options), log);
+
+    opts->config = (char*)zlcf->identity_path;
+
+    opts->events = ZitiContextEvent;
+    opts->event_cb = on_ziti_event;
+    opts->refresh_interval = 60;
+    opts->router_keepalive = 10;
+    opts->app_ctx = zlcf;
+    opts->config_types = ALL_CONFIG_TYPES;
+    opts->metrics_type = INSTANT;
+
+    rc = ziti_init_opts(opts, zlcf->uv_thread_loop);
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "ziti_init_opts returned %d", rc);
+
+    return NGX_OK;
+}
+
 
 static char *
 ngx_http_ziti_identity(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
@@ -263,10 +349,8 @@ ngx_http_ziti_identity(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_http_ziti_loc_conf_t   *zlcf = conf;
     ngx_str_t                  *value = cf->args->elts;
     ngx_conf_str_t              identity_path;
-    // ngx_http_ziti_uv_run_thread_ctx_t *ctx;
-    // ngx_thread_task_t          *task;
 
-    dd("entered, zlcf is: %p", zlcf);
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, cf->log, 0, "ngx_http_ziti_identity: entered");
 
     if (zlcf->identity_path != NULL) {
         return "is duplicate";
@@ -284,7 +368,9 @@ ngx_http_ziti_identity(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     zlcf->identity_path = strdup((char*)identity_path.sv.data);  
 
-    dd("zlcf->identity_path is: %s", zlcf->identity_path);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, cf->log, 0, "identity_path is: %s", zlcf->identity_path);
+
+    ngx_http_ziti_start_uv_loop(zlcf, cf->log);
 
     return NGX_CONF_OK;
 }
