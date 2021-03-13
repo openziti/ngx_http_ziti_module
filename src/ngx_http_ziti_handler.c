@@ -42,7 +42,7 @@ enum { listMapCapacity = 25 };
 /**
  *  Number of simultaneous HTTP requests we can have active against a single host before queueing
  */
-enum { perKeyListMapCapacity = 1 };
+enum { perKeyListMapCapacity = 10 };
 
 struct ListMap* HttpsClientListMap;
 
@@ -491,50 +491,6 @@ void on_client(uv_work_t* req, int status)
 
 static u_char ngx_hello_ziti[] = HELLO_ZITI;
 
-static const char *ALL_CONFIG_TYPES[] = {
-        "all",
-        NULL
-};
-
-
-/**
- * 
- */
-static void on_ziti_event(ziti_context _ztx, const ziti_event_t *event) {
-
-    ngx_http_ziti_loc_conf_t *zlcf;
-
-    switch (event->type) {
-
-    case ZitiContextEvent:
-
-        zlcf = (ngx_http_ziti_loc_conf_t*)ziti_app_ctx(_ztx);
-
-        // Save the global ztx context variable in the zlcf
-        zlcf->ztx = _ztx;
-
-        if (event->event.ctx.ctrl_status == ZITI_OK) {
-
-            const ziti_version *ctrl_ver = ziti_get_controller_version(_ztx);
-            const ziti_identity *proxy_id = ziti_get_identity(_ztx);
-
-            dd("controller version = %s(%s)[%s]", ctrl_ver->version, ctrl_ver->revision, ctrl_ver->build_date);
-            dd("identity = <%s>[%s]@%s", proxy_id->name, proxy_id->id, ziti_get_controller(zlcf->ztx));
-
-            zlcf->state = ZS_LOC_ZITI_INIT_COMPLETED;
-
-            dd("zlcf->state is now: %d", zlcf->state);
-        }
-        else {
-
-            dd("Failed to connect to controller: %s", event->event.ctx.err);
-        }
-        break;
-
-    default:
-        break;
-    }
-}
 
 static void 
 nop(uv_async_t *handle, int status) { }
@@ -548,37 +504,6 @@ uv_thread_loop_func(void *data){
 }
 
 static void
-ngx_http_ziti_uv_run_thread_func(void *data, ngx_log_t *log)
-{
-    /* this function is executed in a thread from the ziti thread_pool */
-
-    ngx_http_ziti_uv_run_thread_ctx_t *ctx = data;
-    ngx_http_ziti_loc_conf_t          *zlcf = ctx->zlcf;
-
-    dd("entered zlcf: %p", zlcf);
-
-    zlcf->state = ZS_LOC_UV_LOOP_STARTED;
-
-    uv_run(zlcf->uv_thread_loop, UV_RUN_DEFAULT);
-
-    dd("************ ngx_http_ziti_uv_run_thread_func is exiting but it should not !");
-}
-
-static void
-ngx_http_ziti_uv_run_thread_completion(ngx_event_t *ev)
-{
-    ngx_http_ziti_uv_run_thread_ctx_t *ctx;
-
-    dd("entered");
-
-    ctx = ev->data;
-
-    dd("ctx is: %p", ctx);
-
-    /* executed in nginx event loop */
-}
-
-static void
 ngx_http_ziti_await_init_complete_func(void *data, ngx_log_t *log)
 {
     /* this function is executed in a thread from the ziti thread_pool */
@@ -587,14 +512,14 @@ ngx_http_ziti_await_init_complete_func(void *data, ngx_log_t *log)
     ngx_http_ziti_loc_conf_t                *zlcf = ctx->zlcf;
     ngx_uint_t                               msec_sleep = 100;
 
-    dd("entered zlcf: %p", zlcf);
+    ZITI_LOG(DEBUG, "ngx_http_ziti_await_init_complete_func() entered");
 
     do {
-        // dd("about to sleep");
+        ZITI_LOG(DEBUG, "ngx_http_ziti_await_init_complete_func() sleeping");
         ngx_msleep(msec_sleep);
     } while (zlcf->state < ZS_LOC_ZITI_INIT_COMPLETED);
 
-    dd("************ ngx_http_ziti_await_init_complete_func is exiting, zlcf->state %d", zlcf->state);
+    ZITI_LOG(DEBUG, "ngx_http_ziti_await_init_complete_func() exiting");
 }
 
 static void
@@ -617,52 +542,19 @@ ngx_http_ziti_await_init_complete_completion(ngx_event_t *ev)
 }
 
 ngx_int_t
-ngx_http_ziti_start_uv_loop(ngx_http_request_t *r)
+ngx_http_ziti_await_init(ngx_http_ziti_loc_conf_t *zlcf, ngx_http_request_t *r)
 {
-    ngx_http_ziti_loc_conf_t      *zlcf;
-    ngx_int_t                      rc;
     ngx_thread_pool_t             *tp;
 
     ngx_http_ziti_await_init_thread_ctx_t *await_init_thread_ctx;
     ngx_thread_task_t             *task_awaitInit;
-
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_start_uv_loop: entered");
-
-    zlcf = ngx_http_get_module_loc_conf(r, ngx_http_ziti_module);
-    dd("entered, zlcf is: %p", zlcf);
-
-    zlcf->ztx = NGX_CONF_UNSET_PTR;
-    zlcf->uv_thread_loop = uv_loop_new();
-    uv_async_init(zlcf->uv_thread_loop, &zlcf->async, (uv_async_cb)nop);
-
-    // Create the libuv thread loop
-    zlcf->uv_thread_loop = uv_loop_new();
-    uv_async_init(zlcf->uv_thread_loop, &zlcf->async, (uv_async_cb)nop);
-    uv_thread_create(&zlcf->thread, (uv_thread_cb)uv_thread_loop_func, zlcf->uv_thread_loop);
-
-    ziti_options *opts = ngx_calloc(sizeof(ziti_options), r->connection->log);
-
-    opts->config = (char*)zlcf->identity_path;
-    dd("identity_path is: %s", zlcf->identity_path);
-
-    opts->events = ZitiContextEvent;
-    opts->event_cb = on_ziti_event;
-    opts->refresh_interval = 60;
-    opts->router_keepalive = 10;
-    opts->app_ctx = zlcf;
-    opts->config_types = ALL_CONFIG_TYPES;
-    opts->metrics_type = INSTANT;
-
-    rc = ziti_init_opts(opts, zlcf->uv_thread_loop);
-
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ziti_init_opts returned %d", rc);
 
     //
     // Launch thread to await completion of Ziti init (Controller connection)
     //
     task_awaitInit = ngx_thread_task_alloc(zlcf->pool, sizeof(ngx_http_ziti_await_init_thread_ctx_t));
     if (task_awaitInit == NULL) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_start_uv_loop: ngx_thread_task_alloc failed");
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_await_init: ngx_thread_task_alloc failed");
         return NGX_ERROR;
     }
 
@@ -676,16 +568,16 @@ ngx_http_ziti_start_uv_loop(ngx_http_request_t *r)
 
     tp = ngx_thread_pool_get((ngx_cycle_t* ) ngx_cycle, &ngx_http_ziti_thread_pool_name);
     if (tp == NULL) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_start_uv_loop: ngx_thread_pool_get failed");
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_await_init: ngx_thread_pool_get failed");
         return NGX_ERROR;
     }
 
     if (ngx_thread_task_post(tp, task_awaitInit) != NGX_OK) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_start_uv_loop: ngx_thread_task_post failed");
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_await_init: ngx_thread_task_post failed");
         return NGX_ERROR;
     }
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_start_uv_loop: Exiting");
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_await_init: Exiting");
 
     return NGX_OK;
 }
@@ -809,11 +701,11 @@ ngx_http_ziti_handler(ngx_http_request_t *r)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "zlcf->state is: %d", zlcf->state);
 
     //
-    // Start the location-scoped uv_loop if necessary
+    // Await the Ziti init if necessary
     //
     if (zlcf->state < ZS_LOC_UV_LOOP_STARTED) {
 
-        rc = ngx_http_ziti_start_uv_loop(r);
+        rc = ngx_http_ziti_await_init(zlcf, r);
 
         if (rc != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;

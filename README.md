@@ -1,7 +1,7 @@
 `ngx_http_ziti_module`
 =====================
 
-Non-blocking upstream module for Nginx to securely connect to a [Ziti Network](https://ziti.dev/about)
+Non-blocking upstream module for Nginx allowing it to securely connect and reverse-proxy to a zero-trust [Ziti Network](https://ziti.dev/about)
 
 <img src="https://ziti.dev/wp-content/uploads/2020/02/ziti.dev_.logo_.png" width="200" />
 
@@ -48,13 +48,13 @@ This module requres the `--with-threads` option for `./configure` for compilatio
 
 You'll need to update the config file to match your build environment.
 
-This module assumes the existance of a named thread pool, `ziti`.  To get this module to run, you'll need to add a `thread_pool` directive to your nginx.conf file, e.g.:
+This module assumes the existance of a named thread pool, `ziti`.  To get this module to run, you'll need to add a `thread_pool` directive to your nginx.conf file, e.g.
 
 ```
-    thread_pool ziti threads=32 max_queue=65536;
+thread_pool ziti threads=32 max_queue=65536;
 ```
 
-If you are using this module, you must figure out how many threads are needed for your particular background operation(s).
+If you are using this module, adjust the thread count to the needs of your particular application (but the example above should work well).
 
 Synopsis
 ========
@@ -63,15 +63,17 @@ Synopsis
 
 thread_pool ziti threads=32 max_queue=65536;
 
+load_module modules/ngx_http_ziti_module.so;
+
 http {
     ...
 
     server {
         ...
 
-        location /some_path {
-            ziti_pass        my-service-name;
-            ziti_identity    /path/to/identity.json;
+        location /dark-service {
+            ziti_pass        my-ziti-service-name;
+            ziti_identity    /path/to/ziti-identity.json;
         }
 
         ...
@@ -87,7 +89,7 @@ Description
 
 This is an nginx upstream module integrating [Ziti](https://ziti.dev) into Nginx in a non-blocking way.
 
-Essentially it provides an efficient and flexible way for nginx internals to reverse-provy to a web server that is dark on the internet and can only be accessed over Ziti.
+Essentially it provides an efficient and flexible way for nginx internals to reverse-provy to a web server that is `dark` on the internet. Here the term `dark` means that the web server can only be accessed via a zero-trust Ziti connection.
 
 [Back to TOC](#table-of-contents)
 
@@ -113,17 +115,13 @@ You can use this as an indication that you may need to increase your client pool
 Here's a sample configuration that shows how to adjust the client pool size:
 
 ```nginx
-
     ...
-
     location /some_path {
         ...
-        ziti_client_pool_size   50;     # Increase client pool size to 50
+        ziti_client_pool_size 50; # Increase client pool size to 50
         ...
     }
-
     ...
-
 ```
 
 
@@ -143,21 +141,20 @@ ziti_identity
 
 **context:** *location*
 
-Absoluete path on disk to the Ziti identity file.
+Absolute path on disk to the Ziti identity file.
 
 
 ```nginx
-
 ziti_identity /some/path/to/identity.json;
 ```
 
-Note that the name `identity.json` is arbitrary.  The actual file is produced during a separate Ziti Enrollment procedure.
+Note that the name `identity.json` in the above example is arbitrary (name is whatever you like).  The actual file is produced during a separate Ziti Enrollment procedure.
 
 [Back to TOC](#table-of-contents)
 
 ziti_pass
 ------------
-**syntax:** *ziti_pass &lt;service&gt;*
+**syntax:** *ziti_pass &lt;servicename&gt;*
 
 **default:** *no*
 
@@ -165,10 +162,9 @@ ziti_pass
 
 **phase:** *content*
 
-This directive specifies the Ziti service name to which HTTP requests should be routed in the current location. The `<service>` argument can be any Ziti service name defined within the Ziti network for which the [ziti_identity](#ziti_identity) has access to.
+This directive specifies the name of the Ziti Service to which HTTP requests should be routed when being handled by the given location scope. The `<servicename>` argument can be the name of any Ziti service defined within the Ziti network for which the [ziti_identity](#ziti_identity) has access.
 
 ```nginx
-
 ziti_pass my-dark-web-server;
 ```
 
@@ -179,14 +175,26 @@ ziti_pass my-dark-web-server;
 Notes
 =======
 
-During development of this module, one tricky bit was figuring out how to resume processing of the HTTP request after the bacground Ziti operation had completed.  The nginx documentation on [thread pools](http://nginx.org/en/docs/dev/development_guide.html#threads) doesn't cover that topic.  Also, the documentation on [HTTP phases](http://nginx.org/en/docs/dev/development_guide.html#http_phases) erroneously lists `ngx_http_core_run_phases()` as the function to call to resume processing.  Using that doesn't work.  
+During development of this module, one tricky thing was figuring out how to resume processing of the HTTP request after the bacground Ziti operation had completed.  The nginx documentation on [thread pools](http://nginx.org/en/docs/dev/development_guide.html#threads) doesn't cover that topic.  Also, the documentation on [HTTP phases](http://nginx.org/en/docs/dev/development_guide.html#http_phases) erroneously lists `ngx_http_core_run_phases()` as the function to call to resume processing.  Using that doesn't work.  
 
 After digging through the nginx sources, I found the correct function was `ngx_http_handler()`.
+
+[Back to TOC](#table-of-contents)
 
 Trouble Shooting
 ================
 
-* to be written...
+* When you see the following error message in `error.log`:
+
+        ERROR ../library/config.c:41 load_config_file() `<some path>` - No such file or directory
+
+	then you should examine the `path` in your `ziti_identity` directive to ensure it properly specifies the path to the Ziti identity file. 
+
+* When you see the following error message in `error.log`:
+
+        ERROR ../library/ziti_ctrl.c:164 ctrl_login_cb() INVALID_AUTH(The authentication request failed)
+
+	then you should examine the `path` in your `ziti_identity` directive to ensure that the specified Ziti identity file does indeed have access to the Ziti network you intend to connect to.
 
 
 [Back to TOC](#table-of-contents)
@@ -194,7 +202,7 @@ Trouble Shooting
 Known Issues
 ============
 
-* to be written...
+* Client HTTP requests that contain a `Connection: Close` header are not processed correctly. A fix is forthcoming.
 
 
 [Back to TOC](#table-of-contents)
@@ -212,7 +220,7 @@ The installation steps are usually as simple as `./configure --with-threads --ad
 Compatibility
 =============
 
-This module has been tested on Linux and Mac OS X. Reports on other POSIX-compliant systems will be highly appreciated.
+This module has been tested on Linux and Mac OS X. Reports of successful use on other POSIX-compliant systems will be highly appreciated.
 
 The following versions of Nginx should work with this module:
 
