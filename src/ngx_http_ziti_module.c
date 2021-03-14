@@ -36,6 +36,7 @@ static ngx_int_t ngx_http_ziti_preconfiguration(ngx_conf_t *cf);
 static ngx_int_t ngx_http_ziti_postconfiguration(ngx_conf_t *cf);
 static char *ngx_http_ziti_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_ziti_identity(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_ziti_client_pool_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_ziti_thread_pool(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void *ngx_http_ziti_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_ziti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -51,12 +52,12 @@ static ngx_command_t ngx_http_ziti_cmds[] = {
       0,
       NULL },
 
-    // { ngx_string("ziti_service"),
-    //   NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
-    //   ngx_http_ziti_service,
-    //   NGX_HTTP_SRV_CONF_OFFSET,
-    //   0,
-    //   NULL },
+    { ngx_string("ziti_client_pool_size"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_http_ziti_client_pool_size,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
 
     { ngx_string("ziti_identity"),
       NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
@@ -64,13 +65,6 @@ static ngx_command_t ngx_http_ziti_cmds[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
-
-	// { ngx_string("ziti_thread_pool"),
-	//   NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS | NGX_CONF_TAKE1,
-	//   ngx_http_ziti_thread_pool,
-	//   NGX_HTTP_LOC_CONF_OFFSET,
-	//   offsetof(ngx_http_ziti_loc_conf_t, thread_pool),
-	//   NULL },
 
     ngx_null_command
 };
@@ -390,3 +384,56 @@ ngx_http_ziti_identity(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
+
+static char *
+ngx_http_ziti_client_pool_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_ziti_loc_conf_t                    *zlcf = conf;
+    ngx_str_t                                   *value;
+    ngx_uint_t                                   i;
+    ngx_int_t                                    n;
+    u_char                                      *data;
+    ngx_uint_t                                   len;
+
+    if (zlcf->client_pool_size) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    for (i = 1; i < cf->args->nelts; i++) {
+
+        if (ngx_http_ziti_strcmp_const(value[i].data, "max=") == 0)
+        {
+            len = value[i].len - (sizeof("max=") - 1);
+            data = &value[i].data[sizeof("max=") - 1];
+
+            n = ngx_atoi(data, len);
+
+            if (n == NGX_ERROR || n < 5) {  // enforce a minimum of 5 clients
+
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid \"max\" value \"%V\" "
+                                   "in \"%V\" directive; must be at least 5",
+                                   &value[i], &cmd->name);
+
+                return NGX_CONF_ERROR;
+            }
+
+            zlcf->client_pool_size = n;
+
+            ZITI_LOG(INFO, "client_pool_size is: %d", zlcf->client_pool_size);
+
+            continue;
+        }
+
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "ngx_http_ziti_module: invalid parameter \"%V\" in"
+                           " \"%V\" directive",
+                           &value[i], &cmd->name);
+
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}

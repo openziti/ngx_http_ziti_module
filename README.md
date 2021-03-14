@@ -28,7 +28,7 @@ Table of Contents
 * [Synopsis](#synopsis)
 * [Description](#description)
 * [Directives](#directives)
-    * [ziti_client_pool](#ziti_client_pool)
+    * [ziti_client_pool_size](#ziti_client_pool_size)
     * [ziti_identity](#ziti_identity)
     * [ziti_pass](#ziti_pass)
 * [Notes](#notes)
@@ -80,8 +80,9 @@ http {
         ...
 
         location /dark-service {
-            ziti_pass        my-ziti-service-name;
-            ziti_identity    /path/to/ziti-identity.json;
+            ziti_pass               my-ziti-service-name;
+            ziti_identity           /path/to/ziti-identity.json;
+            ziti_client_pool_size   max=20;
         }
 
         ...
@@ -114,11 +115,13 @@ ziti_client_pool_size
 
 **context:** *location*
 
-This module supports upstreaming multiple simultaneous HTTP requests to the target Ziti service. Each HTTP request is handled by an internal construct referred to as a `client`. If more HTTP requests arrive than the pool can simultaneously support, some requests will be queued, and will be handled once previous requests complete and the `client` is returned to the pool. When this `client` pool ceiling is hit, you will see a message in the log like the following:
+This module supports upstreaming multiple simultaneous HTTP requests to the target Ziti service. Each HTTP request is handled by an internal construct referred to as a `client`. If more HTTP requests arrive than the pool can simultaneously support, some requests will be queued, and will be handled once previous requests complete and a `client` is returned to the pool. When this `client` pool ceiling is hit, you will see a message in the log that resembles the following:
 
     All available clients [10] are now in use; any additional requests will be queued until clients are returned to pool
 
-You can use this as an indication that you may need to increase your client pool size.
+The above log message is an indication that you may need to increase your client pool size.
+
+This directive allows you to increase the size of the `client` pool.
 
 Here's a sample configuration that shows how to adjust the client pool size:
 
@@ -126,7 +129,7 @@ Here's a sample configuration that shows how to adjust the client pool size:
     ...
     location /some_path {
         ...
-        ziti_client_pool_size 50; # Increase client pool size to 50
+        ziti_client_pool_size max=50; # Handle up to 50 simultaneous requests to Ziti
         ...
     }
     ...
@@ -136,7 +139,7 @@ Here's a sample configuration that shows how to adjust the client pool size:
 The following options are supported:
 
 **max=**`<num>`
-	Specify the capacity of the client pool for the current location block. The <num> value *must* be greater than zero. This option is default to `10`.
+	Specify the capacity of the client pool for the current location block. The <num> value *must* be at least `5`. The default is `10`.
 
 [Back to TOC](#table-of-contents)
 
@@ -149,14 +152,15 @@ ziti_identity
 
 **context:** *location*
 
-Absolute path on disk to the Ziti identity file.
+This directive specifies the absolute file system path to a Ziti identity file.  The identity used *must* have permissions 
+to access the `servicename` specified on the `ziti_pass` directive that shares the location scope the `ziti_identity` resides in.
 
 
 ```nginx
 ziti_identity /some/path/to/identity.json;
 ```
 
-Note that the name `identity.json` in the above example is arbitrary (name is whatever you like).  The actual file is produced during a separate Ziti Enrollment procedure.
+Note that the name `identity.json` in the above example is arbitrary (name it whatever you like).  The actual file is produced during a separate Ziti Enrollment procedure not described here.
 
 [Back to TOC](#table-of-contents)
 
@@ -183,9 +187,11 @@ ziti_pass my-dark-web-server;
 Notes
 =======
 
-During development of this module, one tricky thing was figuring out how to resume processing of the HTTP request after the bacground Ziti operation had completed.  The nginx documentation on [thread pools](http://nginx.org/en/docs/dev/development_guide.html#threads) doesn't cover that topic.  Also, the documentation on [HTTP phases](http://nginx.org/en/docs/dev/development_guide.html#http_phases) erroneously lists `ngx_http_core_run_phases()` as the function to call to resume processing.  Using that doesn't work.  
+During development of this module, one tricky thing was figuring out how to resume processing of the HTTP request after the background Ziti operation had completed.  
 
-After digging through the nginx sources, I found the correct function was `ngx_http_handler()`.
+The nginx documentation on [thread pools](http://nginx.org/en/docs/dev/development_guide.html#threads) doesn't cover that topic.  Also, the documentation on [HTTP phases](http://nginx.org/en/docs/dev/development_guide.html#http_phases) erroneously lists `ngx_http_core_run_phases()` as the function to call to resume processing.  Using that doesn't work.  
+
+After digging through the nginx sources, it was discovered that the correct function was `ngx_http_handler()`.
 
 [Back to TOC](#table-of-contents)
 
@@ -194,7 +200,7 @@ Trouble Shooting
 
 * When you see the following error message in `error.log`:
 
-        ERROR ../library/config.c:41 load_config_file() `<some path>` - No such file or directory
+        ERROR ../library/config.c:41 load_config_file() <some path> - No such file or directory
 
 	then you should examine the `path` in your `ziti_identity` directive to ensure it properly specifies the path to the Ziti identity file. 
 
@@ -202,7 +208,7 @@ Trouble Shooting
 
         ERROR ../library/ziti_ctrl.c:164 ctrl_login_cb() INVALID_AUTH(The authentication request failed)
 
-	then you should examine the `path` in your `ziti_identity` directive to ensure that the specified Ziti identity file does indeed have access to the Ziti network you intend to connect to.
+	then you should examine the `path` in your `ziti_identity` directive to ensure that the specified Ziti identity file does indeed have permission to access the Ziti network you intend to connect to.
 
 
 [Back to TOC](#table-of-contents)

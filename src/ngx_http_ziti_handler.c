@@ -52,12 +52,8 @@ ngx_http_ziti_method_t ngx_http_ziti_methods[] = {
 /**
  *  Number of different Ziti services we can have client pools for
  */
-enum { listMapCapacity = 25 };
+enum { listMapCapacity = 1000 };
 
-/**
- *  Number of simultaneous HTTP requests we can have active against a single host before queueing
- */
-enum { perKeyListMapCapacity = 10 };
 
 struct ListMap* HttpsClientListMap;
 
@@ -82,9 +78,10 @@ uv_mutex_t client_pool_lock;
 bool listMapInsert(struct ListMap* collection, ngx_http_ziti_request_ctx_t *request_ctx, void* value) 
 {
     ngx_http_request_t          *r = request_ctx->r;
+    ngx_http_ziti_loc_conf_t    *zlcf = ngx_http_get_module_loc_conf(r, ngx_http_ziti_module);
 
-    if (collection->count == listMapCapacity) {
-        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "max services already at capacity [%d], insert FAIL", listMapCapacity);
+    if (collection->count == zlcf->client_pool_size) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0, "max services already at capacity [%d], insert FAIL", zlcf->client_pool_size);
         return false;
     }
     
@@ -108,9 +105,12 @@ struct ListMap* getInnerListMapValueForKey(struct ListMap* collection, char* key
 }
 
 
-HttpsClient* getHttpsClientForKey(struct ListMap* collection, char* key, ngx_http_request_t *r)  {
+HttpsClient* getHttpsClientForKey(struct ListMap* collection, char* key, ngx_http_request_t *r)  
+{
+    ngx_http_ziti_loc_conf_t    *zlcf = ngx_http_get_module_loc_conf(r, ngx_http_ziti_module);
+
     HttpsClient* value = NULL;
-    int busyCount = 0;
+    size_t busyCount = 0;
     for (size_t i = 0 ; i < collection->count && value == NULL ; ++i) {
         if (strcmp(collection->kvPairs[i].key, key) == 0) {
           value = collection->kvPairs[i].value;
@@ -127,7 +127,7 @@ HttpsClient* getHttpsClientForKey(struct ListMap* collection, char* key, ngx_htt
     }
     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "returning value '%p', collection->count is: [%d], busy-count is: [%d]", value, collection->count, busyCount);
 
-    if (busyCount == perKeyListMapCapacity) {
+    if (busyCount == zlcf->client_pool_size) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "All available clients [%d] now in use; additional requests will be queued until clients are returned to pool", busyCount);
     }
 
@@ -154,10 +154,14 @@ static int purge_and_replace_bad_clients(struct ListMap* clientListMap, ngx_http
     ngx_http_request_t          *r = request_ctx->r;
     ngx_http_ziti_loc_conf_t    *zlcf = ngx_http_get_module_loc_conf(r, ngx_http_ziti_module);
 
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "purge_and_replace_bad_clients() entered");
+
     int numReplaced = 0;
-    for (int i = 0; i < perKeyListMapCapacity; i++) {
+    for (size_t i = 0; i < zlcf->client_pool_size; i++) {
 
         HttpsClient* httpsClient = clientListMap->kvPairs[i].value;
+
+        ZITI_LOG(DEBUG, "httpsClient is: %p", httpsClient);
 
         if (httpsClient->purge) {
 
@@ -203,9 +207,9 @@ static void allocate_client(uv_work_t* req)
         clientListMap = newListMap(r);
         listMapInsert(HttpsClientListMap, request_ctx, (void*)clientListMap);
 
-        uv_sem_init(&(clientListMap->sem), perKeyListMapCapacity);
+        uv_sem_init(&(clientListMap->sem), zlcf->client_pool_size);
 
-        for (int i = 0; i < perKeyListMapCapacity; i++) {
+        for (size_t i = 0; i < zlcf->client_pool_size; i++) {
 
             HttpsClient* httpsClient = ngx_calloc(sizeof *httpsClient, r->connection->log);
             httpsClient->scheme_host_port = strdup(request_ctx->scheme_host_port);
