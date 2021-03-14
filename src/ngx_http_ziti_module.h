@@ -40,6 +40,7 @@ limitations under the License.
 
 #define ngx_str_last(str)            (u_char *) ((str)->data + (str)->len)
 #define ngx_conf_str_empty(str)      ((str)->sv.len == 0 && (str)->cv == NULL)
+#define ngx_http_ziti_strcmp_const(a, b) ngx_strncmp(a, b, sizeof(b) - 1)
 
 extern uv_loop_t *uv_thread_loop;
 
@@ -92,6 +93,7 @@ typedef struct {
     uv_async_t                           async;
     ziti_context                         ztx;
 	ngx_thread_pool_t                   *thread_pool;
+    size_t                               client_pool_size;
 } ngx_http_ziti_loc_conf_t;
 
 
