@@ -28,6 +28,7 @@ Table of Contents
 * [Synopsis](#synopsis)
 * [Description](#description)
 * [Directives](#directives)
+    * [ziti_buffer_size](#ziti_buffer_size)
     * [ziti_client_pool_size](#ziti_client_pool_size)
     * [ziti_identity](#ziti_identity)
     * [ziti_pass](#ziti_pass)
@@ -82,7 +83,6 @@ http {
         location /dark-service {
             ziti_pass               my-ziti-service-name;
             ziti_identity           /path/to/ziti-identity.json;
-            ziti_client_pool_size   max=20;
         }
 
         ...
@@ -106,6 +106,32 @@ Directives
 ==========
 
 [Back to TOC](#table-of-contents)
+
+ziti_buffer_size
+-------------------
+**syntax:** *ziti_buffer_size &lt;size&gt;*
+
+**default:** *ziti_buffer_size 4k/8k*
+
+**context:** *location, location if*
+
+Specify the buffer size for Ziti outputs. Default to the platform page size (4k/8k). The larger the buffer, the less streammy the outputing process will be.
+
+Here's a sample configuration that shows how to adjust the Ziti buffer size:
+
+```nginx
+    ...
+    location /some_path {
+        ...
+        ziti_buffer_size 16384; # Handle up to 16k chunks
+        ...
+    }
+    ...
+```
+
+
+[Back to TOC](#table-of-contents)
+
 
 ziti_client_pool_size
 -----------------
@@ -155,9 +181,16 @@ ziti_identity
 This directive specifies the absolute file system path to a Ziti identity file.  The identity used *must* have permissions 
 to access the `servicename` specified on the `ziti_pass` directive that shares the location scope the `ziti_identity` resides in.
 
+Here's a sample configuration that shows how to specify the Ziti identity:
 
 ```nginx
-ziti_identity /some/path/to/identity.json;
+    ...
+    location /some_path {
+        ...
+        ziti_identity /some/path/to/identity.json;
+        ...
+    }
+    ...
 ```
 
 Note that the name `identity.json` in the above example is arbitrary (name it whatever you like).  The actual file is produced during a separate Ziti Enrollment procedure not described here.
@@ -174,11 +207,21 @@ ziti_pass
 
 **phase:** *content*
 
-This directive specifies the name of the Ziti Service to which HTTP requests should be routed when being handled by the given location scope. The `<servicename>` argument can be the name of any Ziti service defined within the Ziti network for which the [ziti_identity](#ziti_identity) has access.
+This directive specifies the name of the Ziti Service to which HTTP requests should be routed when being handled by the given location scope. The `<servicename>` argument can be the name of any Ziti service defined within the Ziti network for which the [ziti_identity](#ziti_identity) has access. The service is typically a web server that responds to HTTP requests.
+
+Here's a sample configuration that shows how to specify the Ziti service name:
 
 ```nginx
-ziti_pass my-dark-web-server;
+    ...
+    location /some_path {
+        ...
+        ziti_pass my-dark-web-server;
+        ...
+    }
+    ...
 ```
+
+Note that the name `my-dark-web-server` in the above example is arbitrary (name it whatever you like).  The actual service name is specified during a separate Ziti network administration/setup procedure not described here.
 
 
 [Back to TOC](#table-of-contents)
