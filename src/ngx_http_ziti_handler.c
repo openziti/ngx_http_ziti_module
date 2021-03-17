@@ -25,6 +25,8 @@ limitations under the License.
 #include "ngx_http_ziti_upstream.h"
 
 
+static ngx_int_t ngx_http_ziti_get_buf(ngx_http_request_t *r, ngx_http_ziti_request_ctx_t *request_ctx);
+static u_char * ngx_http_ziti_get_postponed(ngx_http_request_t *r, size_t len);
 
 typedef struct {
     char          *name;
@@ -315,7 +317,266 @@ ngx_http_ziti_req_thread_completion(ngx_event_t *ev)
 /**
  * 
  */
-void on_resp_body(um_http_req_t *req, const char *body, ssize_t len) 
+static u_char *
+ngx_http_ziti_request_mem(ngx_http_request_t *r, size_t len)
+{
+    ngx_http_ziti_request_ctx_t  *request_ctx = (ngx_http_ziti_request_ctx_t*)ngx_http_get_module_ctx(r, ngx_http_ziti_module);
+    ngx_int_t                     rc;
+    u_char                       *p;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_request_mem() entered, r: %p, len: %d", r, len);
+
+    rc = ngx_http_ziti_get_buf(r, request_ctx);
+
+    if (rc != NGX_OK) {
+        return NULL;
+    }
+
+    if (request_ctx->avail_out < len) {
+        p = ngx_http_ziti_get_postponed(r, len);
+        if (p == NULL) {
+            return NULL;
+        }
+
+        request_ctx->postponed.pos = p;
+        request_ctx->postponed.last = p + len;
+
+        return p;
+    }
+
+    return request_ctx->out_buf->last;
+}
+
+
+/**
+ * 
+ */
+static u_char *
+ngx_http_ziti_get_postponed(ngx_http_request_t *r, size_t len)
+{
+    ngx_http_ziti_request_ctx_t  *request_ctx = (ngx_http_ziti_request_ctx_t*)ngx_http_get_module_ctx(r, ngx_http_ziti_module);
+    u_char          *p;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_get_postponed() entered, r: %p, len: %d", r, len);
+
+    if (request_ctx->cached.start == NULL) {
+        goto alloc;
+    }
+
+    if ((size_t) (request_ctx->cached.end - request_ctx->cached.start) < len) {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_get_postponed() ngx_pfree of request_ctx->cached.start %p", request_ctx->cached.start);
+        ngx_pfree(r->pool, request_ctx->cached.start);
+        goto alloc;
+    }
+
+    return request_ctx->cached.start;
+
+alloc:
+
+    p = ngx_palloc(request_ctx->pool, len);
+    if (p == NULL) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_get_postponed() ngx_palloc returned NULL");
+        return NULL;
+    }
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_get_postponed() ngx_palloc of %p len %d", p, len);
+
+    request_ctx->cached.start = p;
+    request_ctx->cached.end = p + len;
+
+    return p;
+}
+
+
+/**
+ * 
+ */
+static ngx_int_t
+ngx_http_ziti_get_buf(ngx_http_request_t *r, ngx_http_ziti_request_ctx_t *request_ctx)
+{
+    ngx_http_ziti_loc_conf_t   *zlcf = ngx_http_get_module_loc_conf(r, ngx_http_ziti_module);
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_get_buf() entered, r: %p", r);
+
+    if (request_ctx->avail_out) {
+        return NGX_OK;
+    }
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "creating temp buf with size: %d", (int) zlcf->buf_size);
+
+    request_ctx->out_buf = ngx_create_temp_buf(r->pool, zlcf->buf_size);
+
+    if (request_ctx->out_buf == NULL) {
+        return NGX_ERROR;
+    }
+
+    request_ctx->out_buf->tag = (ngx_buf_tag_t) &ngx_http_ziti_module;
+    request_ctx->out_buf->recycled = 1;
+
+    request_ctx->avail_out = zlcf->buf_size;
+
+    return NGX_OK;
+}
+
+
+/**
+ * 
+ */
+static ngx_int_t
+ngx_http_ziti_submit_mem(ngx_http_request_t *r, ngx_http_ziti_request_ctx_t *request_ctx, size_t len)
+{
+    ngx_chain_t                *cl;
+    ngx_int_t                   rc;
+    size_t                      postponed_len;
+    ngx_http_ziti_loc_conf_t   *zlcf = ngx_http_get_module_loc_conf(r, ngx_http_ziti_module);
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() entered, r: %p, len: %d", r, len);
+
+    if (request_ctx->postponed.pos != NULL) 
+    {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() copy postponed data over to request_ctx->out_buf for len %d", (int) len);
+
+        postponed_len = request_ctx->postponed.last - request_ctx->postponed.pos;
+
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() postponed_len %d, request_ctx->avail_out: %d", (int) postponed_len, (int)request_ctx->avail_out);
+
+        if (postponed_len > request_ctx->avail_out) {
+
+            if (request_ctx->out_buf && request_ctx->out_buf->pos != request_ctx->out_buf->last) 
+            {
+                ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() save the current request_ctx->out_buf");
+                
+                /* save the current request_ctx->out_buf */
+                cl = ngx_alloc_chain_link(r->pool);
+                if (cl == NULL) {
+                    return NGX_ERROR;
+                }
+
+                cl->buf = request_ctx->out_buf;
+                cl->next = NULL;
+                *request_ctx->last_out = cl;
+                request_ctx->last_out = &cl->next;
+            }
+
+            /* create a buf for the postponed buf */
+
+            len = postponed_len > zlcf->buf_size ? postponed_len : zlcf->buf_size;
+
+            request_ctx->out_buf = ngx_create_temp_buf(r->pool, len);
+
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() allocated request_ctx->out_buf: %p of len: %d", request_ctx->out_buf, (int)len);
+
+            if (request_ctx->out_buf == NULL) {
+                return NGX_ERROR;
+            }
+
+            request_ctx->out_buf->tag = (ngx_buf_tag_t) &ngx_http_ziti_module;
+            request_ctx->out_buf->recycled = 1;
+
+            request_ctx->out_buf->last = ngx_copy(request_ctx->out_buf->last, request_ctx->postponed.pos, postponed_len);
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() ngx_copy of postponed_len: %d", (int)postponed_len);
+
+            request_ctx->avail_out = len - postponed_len;
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() request_ctx->avail_out: %d", (int)request_ctx->avail_out);
+
+            request_ctx->postponed.pos = NULL;
+
+            if (request_ctx->avail_out == 0) 
+            {
+                ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() save the new buf");
+
+                /* save the new buf */
+
+                cl = ngx_alloc_chain_link(r->pool);
+                if (cl == NULL) {
+                    return NGX_ERROR;
+                }
+
+                cl->buf = request_ctx->out_buf;
+                cl->next = NULL;
+                *request_ctx->last_out = cl;
+                request_ctx->last_out = &cl->next;
+            }
+
+            return NGX_OK;
+        }
+
+        for ( ;; ) 
+        {
+            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_submit_mem() top of for loop");
+
+            len = request_ctx->postponed.last - request_ctx->postponed.pos;
+            if (len > request_ctx->avail_out) {
+                len = request_ctx->avail_out;
+            }
+
+            request_ctx->out_buf->last = ngx_copy(request_ctx->out_buf->last, request_ctx->postponed.pos, len);
+
+            request_ctx->avail_out -= len;
+
+            request_ctx->postponed.pos += len;
+
+            if (request_ctx->postponed.pos == request_ctx->postponed.last) {
+                request_ctx->postponed.pos = NULL;
+            }
+
+            if (request_ctx->avail_out > 0) {
+                break;
+            }
+
+            dd("MEM save request_ctx->out_buf");
+
+            cl = ngx_alloc_chain_link(r->pool);
+            if (cl == NULL) {
+                return NGX_ERROR;
+            }
+
+            cl->buf = request_ctx->out_buf;
+            cl->next = NULL;
+            *request_ctx->last_out = cl;
+            request_ctx->last_out = &cl->next;
+
+            if (request_ctx->postponed.pos == NULL) {
+                break;
+            }
+
+            rc = ngx_http_ziti_get_buf(r, request_ctx);
+            if (rc != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+
+        return NGX_OK;
+    }
+
+    dd("MEM consuming out_buf for %d", (int) len);
+
+    request_ctx->out_buf->last += len;
+    request_ctx->avail_out -= len;
+
+    if (request_ctx->avail_out == 0) {
+        dd("MEM save request_ctx->out_buf");
+
+        cl = ngx_alloc_chain_link(r->pool);
+        if (cl == NULL) {
+            return NGX_ERROR;
+        }
+
+        cl->buf = request_ctx->out_buf;
+        cl->next = NULL;
+        *request_ctx->last_out = cl;
+        request_ctx->last_out = &cl->next;
+    }
+
+    return NGX_OK;
+}
+
+
+/**
+ * 
+ */
+void 
+on_resp_body(um_http_req_t *req, const char *body, ssize_t len) 
 {
     ngx_http_ziti_request_ctx_t *request_ctx = (ngx_http_ziti_request_ctx_t*)req->data;
     ngx_http_request_t          *r = request_ctx->r;
@@ -323,31 +584,39 @@ void on_resp_body(um_http_req_t *req, const char *body, ssize_t len)
     ngx_http_ziti_req_complete_thread_ctx_t *req_complete_thread_ctx;
     ngx_thread_task_t           *task_ReqComplete;
     ngx_thread_pool_t           *tp;
-
+    u_char                      *pos, *last;
 
     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_resp_body() entered, body: %p, len: %d, httpsClient: %p", body, len, request_ctx->httpsClient);
 
-    HttpsRespBodyItem* item = (HttpsRespBodyItem*) ngx_pcalloc(request_ctx->pool, sizeof(HttpsRespBodyItem));
+    if (NULL != body) 
+    {
+        pos = ngx_http_ziti_request_mem(r, len);
+        if (pos == NULL) {
+            ZITI_LOG(ERROR, "ngx_http_ziti_request_mem() returned NULL");
+            return;
+        }
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "new HttpsRespBodyItem is: %p", item);
-  
-    //  Grab everything off the um_http_resp_t that we need to eventually pass on 
+        last = pos;
 
-    item->req = req;
+        /* fill in the buffer */
 
-    if (NULL != body) {
-        item->body = ngx_pcalloc(request_ctx->pool, len);
+        last = ngx_copy(last, body, (uint32_t) len);
 
-        memcpy((void*)item->body, body, len);
+        if ((ssize_t) (last - pos) != len) {
+            ZITI_LOG(DEBUG, "len %d", (int) len);
 
-        // ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_resp_body() body: %s", body);
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ziti: FATAL: output on_resp_body buffer error");
+            return;
+        }
 
-    } else {
-        item->body = NULL;
+        ngx_http_ziti_submit_mem(r, request_ctx, len);
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_resp_body() body: %s", body);
+
     }
-    item->len = len;
 
-    if ((NULL == body) && (UV_EOF == len)) {
+    if ((NULL == body) && (UV_EOF == len)) 
+    {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "<--------- returning httpsClient [%p] back to pool", request_ctx->httpsClient);
         request_ctx->httpsClient->active = false;
 
@@ -396,47 +665,106 @@ void on_resp_body(um_http_req_t *req, const char *body, ssize_t len)
 /**
  * 
  */
-void on_resp(um_http_resp_t *resp, void *data) 
+ngx_int_t
+ngx_http_ziti_set_header(ngx_http_request_t *r, ngx_str_t *key, ngx_str_t *value)
+{
+    ngx_uint_t                   i;
+    ngx_table_elt_t             *h;
+    ngx_list_part_t             *part;
+
+    // ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_set_header() entered for '%s: %s'", key->data, value->data);
+
+    if (ngx_strncasecmp(key->data, (u_char*)"Content-Length", key->len) == 0) {
+        r->headers_out.content_length_n = ngx_atoi(value->data, value->len);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_set_header() setting content_length_n: %d", r->headers_out.content_length_n);
+        return NGX_OK;
+    }
+    else if (ngx_strncasecmp(key->data, (u_char*)"Content-Type", key->len) == 0) {
+        r->headers_out.content_type_len = value->len;
+        r->headers_out.content_type = *value;
+        return NGX_OK;
+    }
+
+    part = &r->headers_out.headers.part;
+    h = part->elts;
+
+    for (i = 0; /* void */; i++) 
+    {
+        // ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "***************************** %d", i);
+
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+
+            part = part->next;
+            h = part->elts;
+            i = 0;
+        }
+
+        // ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "in loop: h[i].key.data '%s' len: %d", h[i].key.data, h[i].key.len);
+
+        // ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "in loop: key->data: '%s' key->len: %d", key->data, key->len);
+
+        if (h[i].key.len == key->len && ngx_strncasecmp(h[i].key.data, key->data, h[i].key.len) == 0)
+        {
+            // ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "******** setting h[i].value");
+
+            if (value->len == 0) {
+                h[i].hash = 0;
+            }
+
+            h[i].value = *value;
+
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_set_header() updating '%s: %s'", h->key.data, h->value.data);
+
+            return NGX_OK;
+        }
+    }
+
+    if (value->len == 0) {
+        return NGX_OK;
+    }
+
+    h = ngx_list_push(&r->headers_out.headers);
+
+    if (h == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    h->hash = 1;
+    h->key = *key;
+    h->value = *value;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_set_header() adding '%s: %s'", h->key.data, h->value.data);
+
+    return NGX_OK;
+}
+
+
+/**
+ * 
+ */
+void 
+on_resp(um_http_resp_t *resp, void *data) 
 {
     ngx_http_ziti_request_ctx_t *request_ctx = (ngx_http_ziti_request_ctx_t*)data;
     ngx_http_request_t          *r = request_ctx->r;
+    ngx_str_t                    key, value;
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_resp() entered for resp: %p, httpsReq: %p", resp, request_ctx->httpsReq);
 
+    // status code
+    r->headers_out.status = resp->code;
 
-    request_ctx->httpsReq->on_resp_has_fired = true;
-    request_ctx->httpsReq->respCode = resp->code;
-
-    HttpsRespItem* item = ngx_pcalloc(request_ctx->pool, sizeof(*item));
-
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "new HttpsRespItem is: %p", item);
-  
-    // Grab everything off the um_http_resp_t that we need to eventually pass on
-
-    item->req = resp->req;
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "item->req: %p", item->req);
-
-    item->code = resp->code;
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "item->code: %d", item->code);
-
-    item->status = strdup(resp->status);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "item->status: %s", item->status);
-
-    int header_cnt = 0;
+    // headers
     um_http_hdr *h;
     LIST_FOREACH(h, &resp->headers, _next) {
-        header_cnt++;
-    }
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "header_cnt: %d", header_cnt);
-
-    item->headers = ngx_pcalloc(request_ctx->pool, (header_cnt + 1) * sizeof(um_http_hdr));
-
-    header_cnt = 0;
-    LIST_FOREACH(h, &resp->headers, _next) {
-        item->headers[header_cnt].name = strdup(h->name);
-        item->headers[header_cnt].value = strdup(h->value);
-        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "item->headers[%d]: %s : %s", header_cnt, item->headers[header_cnt].name, item->headers[header_cnt].value);
-        header_cnt++;
+        key.data = (u_char *) strdup(h->name);
+        key.len  = strlen(h->name);
+        value.data = (u_char *) strdup(h->value);
+        value.len = strlen(h->value);
+        ngx_http_ziti_set_header(r, &key, &value);
     }
 
     if ((UV_EOF == resp->code) || (resp->code < 0)) {
@@ -470,7 +798,9 @@ void on_client(uv_work_t* req, int status)
 {
     ngx_http_ziti_request_ctx_t *request_ctx = (ngx_http_ziti_request_ctx_t*)req->data;
     ngx_http_request_t          *r = request_ctx->r;
+    // ngx_http_ziti_loc_conf_t    *zlcf = ngx_http_get_module_loc_conf(r, ngx_http_ziti_module);
     ngx_http_ziti_method_t      *method;
+    // u_char      *p, *start, *end, *last;
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_client() entered, uv_work_t is: %p, status is: %d", req, status);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "client is: [%p]", request_ctx->httpsClient);
@@ -484,12 +814,15 @@ void on_client(uv_work_t* req, int status)
     }
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "method->name is: [%s]", method->name);
 
+    char * uri_path = (char*) ngx_pcalloc(request_ctx->pool, r->uri.len + 1);
+    ngx_copy(uri_path, r->uri.data, r->uri.len);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "uri_path  is: [%s]", uri_path);
+
     // Initiate the request:   HTTP -> TLS -> Ziti -> Service 
     um_http_req_t *ur = um_http_req(
         &(request_ctx->httpsClient->client),
         method->name,
-        // (char*)(r->uri.data),  //temp
-        "/",
+        uri_path,
         on_resp,
         request_ctx  /* Pass our request_ctx around so we can eventually mark it complete */
     );
@@ -506,9 +839,6 @@ void on_client(uv_work_t* req, int status)
 
 
 
-#define HELLO_ZITI "Ziti Rocks!\r\n"
-
-static u_char ngx_hello_ziti[] = HELLO_ZITI;
 
 
 static void 
@@ -602,69 +932,8 @@ ngx_http_ziti_await_init(ngx_http_ziti_loc_conf_t *zlcf, ngx_http_request_t *r)
 }
 
 
-void resp_cb(um_http_resp_t *resp, void *data) 
-{
-    // ngx_http_ziti_um_http_req_thread_ctx_t  *um_http_req_thread_ctx = (ngx_http_ziti_um_http_req_thread_ctx_t*)data;
 
 
-    // ngx_http_request_t              *r;
-
-    dd("entered, resp->code: %d", resp->code);
-
-    // r = (ngx_http_request_t*) resp->req->data;
-    // dd("r: %p", r);
-    // dd("r->pool is: %p", r->pool);
-
-
-    // if (resp->code < 0) {
-    //     // fprintf(stderr, "ERROR: %d(%s)", resp->code, uv_strerror(resp->code));
-    //     // exit(-1);
-    // }
-    // um_http_hdr *h;
-    // printf("Response (%d) >>>\nHeaders >>>\n", resp->code);
-    // LIST_FOREACH(h, &resp->headers, _next) {
-    //     printf("\t%s: %s\n", h->name, h->value);
-    // }
-    // printf("\n");
-}
-
-void body_cb(um_http_req_t *req, const char *body, ssize_t len) 
-{
-    ngx_http_ziti_um_http_req_thread_ctx_t  *um_http_req_thread_ctx = (ngx_http_ziti_um_http_req_thread_ctx_t*)req->data;
-    ngx_http_ziti_request_ctx_t             *request_ctx = um_http_req_thread_ctx->request_ctx;
-    // ngx_http_ziti_request_ctx_t             *request_ctx = (ngx_http_ziti_request_ctx_t*)req->data;
-    ngx_http_request_t                      *r = um_http_req_thread_ctx->r;
-    // ngx_http_request_t                      *r = request_ctx->r;
-
-    // dd("um_http_req_thread_ctx: %p", um_http_req_thread_ctx);
-    dd("request_ctx: %p", request_ctx);
-    dd("r: %p", r);
-
-    dd("entered, body len: %ld", len);
-
-    if (len == UV_EOF) {
-        dd("================ Request completed");
-
-        request_ctx->state = ZS_REQ_DONE;
-        // dd("request_ctx->state: %p", &request_ctx->state);
-        // dd("request_ctx->state: %d", request_ctx->state);
-
-        // r->main->blocked--;
-        // dd("r->main->blocked: %d", r->main->blocked);
-
-
-        // dd("================ calling ngx_http_core_run_phases()");
-        // r->write_event_handler(r);
-        // // ngx_http_run_posted_requests(c);
-        // ngx_http_core_run_phases(r);
-        // dd("================ back from ngx_http_core_run_phases()");
-
-    } else if (len < 0) {
-        // dd("================ error(%zd) %s", len, uv_strerror(len));
-    } else {
-        dd("================ %*.*s", (int) len, (int) len, body);
-    }
-}
 
 
 /**
@@ -676,11 +945,6 @@ ngx_http_ziti_handler(ngx_http_request_t *r)
     ngx_http_ziti_loc_conf_t      *zlcf;
     ngx_http_ziti_request_ctx_t   *request_ctx;
     ngx_int_t                      rc;
-
-    // TEMP
-    ngx_buf_t *b;
-    ngx_chain_t out;
-
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_handler: Entering handler");
 
@@ -715,6 +979,8 @@ ngx_http_ziti_handler(ngx_http_request_t *r)
         if (NULL == HttpsClientListMap) {
             HttpsClientListMap = newListMap(r);
         }
+
+        request_ctx->last_out = &request_ctx->out_bufs;
     }
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "zlcf->state is: %d", zlcf->state);
@@ -779,34 +1045,41 @@ ngx_http_ziti_handler(ngx_http_request_t *r)
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_ziti_handler: Exiting handler.");
 
     /* Set the Content-Type header. */
-    r->headers_out.content_type.len = sizeof("text/plain") - 1;
-    r->headers_out.content_type.data = (u_char *) "text/plain";
+    // r->headers_out.content_type.len = sizeof("text/html; charset=utf-8") - 1;
+    // r->headers_out.content_type.data = (u_char *) "text/html; charset=utf-8";
 
-    /* Allocate a new buffer for sending out the reply. */
-    b = ngx_pcalloc(request_ctx->pool, sizeof(ngx_buf_t));
+    if (ngx_http_set_content_type(r) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
 
     /* Insertion in the buffer chain. */
-    out.buf = b;
-    out.next = NULL; /* just one buffer */
+    request_ctx->out_chain.buf = request_ctx->out_buf;
+    request_ctx->out_chain.next = NULL; /* just one buffer */
 
-    b->pos = ngx_hello_ziti; /* first position in memory of the data */
-    b->last = ngx_hello_ziti + sizeof(ngx_hello_ziti) - 1; /* last position in memory of the data */
-    b->memory = 1; /* content is in read-only memory */
-    b->last_buf = 1; /* there will be no more buffers in the request */
+    // request_ctx->out_buf->pos = ngx_hello_ziti; /* first position in memory of the data */
+    // request_ctx->out_buf->last = ngx_hello_ziti + sizeof(ngx_hello_ziti) - 1; /* last position in memory of the data */
+    // request_ctx->out_buf->memory = 1; /* content is in read-only memory */
+    // request_ctx->out_buf->last_buf = 1; /* there will be no more buffers in the request */
 
     /* Sending the headers for the reply. */
     r->headers_out.status = NGX_HTTP_OK; /* 200 status code */
+    
     /* Get the content length of the body. */
-    r->headers_out.content_length_n = sizeof(ngx_hello_ziti) - 1;
+    // r->headers_out.content_length_n = sizeof(ngx_hello_ziti) - 1;
+    // r->headers_out.content_length_n = (request_ctx->out_buf->end - request_ctx->out_buf->start);
+    
     ngx_http_send_header(r); /* Send the headers */
 
     /* Send the body, and return the status code of the output filter chain. */
-    int outrc = ngx_http_output_filter(r, &out);
+    int outrc = ngx_http_output_filter(r, &request_ctx->out_chain);
 
     //
     // temp stuff above
 
     ngx_destroy_pool(request_ctx->pool);
+
+    ngx_pfree(r->pool, request_ctx);
 
     return outrc;
 

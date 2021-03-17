@@ -37,6 +37,7 @@ static ngx_int_t ngx_http_ziti_postconfiguration(ngx_conf_t *cf);
 static char *ngx_http_ziti_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_ziti_identity(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_ziti_client_pool_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_ziti_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_ziti_thread_pool(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void *ngx_http_ziti_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_ziti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -57,6 +58,13 @@ static ngx_command_t ngx_http_ziti_cmds[] = {
       ngx_http_ziti_client_pool_size,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
+      NULL },
+
+    { ngx_string("ziti_buffer_size"),
+      NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      ngx_http_ziti_buffer_size,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_ziti_loc_conf_t, buf_size),
       NULL },
 
     { ngx_string("ziti_identity"),
@@ -433,6 +441,29 @@ ngx_http_ziti_client_pool_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                            &value[i], &cmd->name);
 
         return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+char *
+ngx_http_ziti_buffer_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    char            *p = conf;
+    size_t           *sp;
+    ngx_str_t        *value;
+
+    sp = (size_t *) (p + cmd->offset);
+    if (*sp != NGX_CONF_UNSET_SIZE) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    *sp = ngx_parse_size(&value[1]);
+    if (*sp == (size_t) NGX_ERROR) {
+        return "invalid value";
     }
 
     return NGX_CONF_OK;

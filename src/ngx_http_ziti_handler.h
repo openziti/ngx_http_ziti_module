@@ -73,12 +73,19 @@ typedef struct ngx_http_ziti_request_ctx_s {
     ZITI_REQ_STATE                      state;    
     ngx_http_request_t                 *r;
     ngx_pool_t                          *pool;
-    // ngx_uint_t                          done;
     ngx_uint_t                          status;
     um_src_t                            zs;
     um_http_t                           clt;
-    ngx_buf_t                          *b;
-    ngx_chain_t                         out;
+    size_t                              buf_size;
+
+    ngx_chain_t                        *out_bufs;
+    ngx_chain_t                       **last_out;
+    
+    ngx_buf_t                          *out_buf;
+    ngx_buf_t                           cached;
+    ngx_buf_t                           postponed;
+    size_t                              avail_out;
+    ngx_chain_t                         out_chain;
     ngx_http_ziti_request_callback_t    callback;
     ngx_int_t                           err;
     uv_work_t                           uv_req;
