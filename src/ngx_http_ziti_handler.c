@@ -746,6 +746,49 @@ on_resp(um_http_resp_t *resp, void *data)
 /**
  * 
  */
+void
+on_req_body(um_http_req_t *req, const char *body, ssize_t status) 
+{
+    /* nop */
+}
+
+
+/**
+ * 
+ */
+void
+on_client_data(ngx_http_request_t *r)
+{
+    ngx_http_ziti_request_ctx_t   *request_ctx;
+    off_t                          len;
+    ngx_chain_t                   *in;
+    um_http_req_t                 *ur;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_client_data() entered");
+
+    if (r->request_body == NULL) {
+        return;
+    }
+
+    request_ctx = (ngx_http_ziti_request_ctx_t*)ngx_http_get_module_ctx(r, ngx_http_ziti_module);
+
+    ur = request_ctx->httpsReq->req;
+
+    for (in = r->request_body->bufs; in; in = in->next) 
+    {
+        len = ngx_buf_size(in->buf);
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_client_data() chunk len is: %d", len);
+
+        // write the data over to the Ziti service
+        um_http_req_data(ur, (void*)in->buf->start, len, on_req_body );
+    }
+}
+
+
+/**
+ * 
+ */
 void on_client(uv_work_t* req, int status) 
 {
     ngx_http_ziti_request_ctx_t *request_ctx = (ngx_http_ziti_request_ctx_t*)req->data;
@@ -785,6 +828,9 @@ void on_client(uv_work_t* req, int status)
 
     // Add headers to request
     propagate_headers_to_request(ur, r);
+
+    // Ask Nginx for the client (POST|PUT) data
+    ngx_http_read_client_request_body(r, on_client_data);
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "on_client() exiting");
 }
