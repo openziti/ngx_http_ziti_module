@@ -28,7 +28,6 @@ limitations under the License.
 void *
 ngx_http_upstream_ziti_create_srv_conf(ngx_conf_t *cf)
 {
-    ngx_pool_cleanup_t                   *cln;
     ngx_http_upstream_ziti_srv_conf_t    *conf;
 
     conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_upstream_ziti_srv_conf_t));
@@ -38,7 +37,7 @@ ngx_http_upstream_ziti_create_srv_conf(ngx_conf_t *cf)
 
     conf->pool = cf->pool;
 
-    cln = ngx_pool_cleanup_add(cf->pool, 0);
+    ngx_pool_cleanup_add(cf->pool, 0);
 
     return conf;
 }
