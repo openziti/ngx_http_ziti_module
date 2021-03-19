@@ -24,9 +24,10 @@ limitations under the License.
 typedef enum ZITI_REQ_STATE_tag
 {
     ZS_REQ_INIT = 0,
-    ZS_REQ_ALLOC_CLIENT,
     ZS_REQ_PROCESSING,
-    ZS_REQ_DONE
+    ZS_RESP_HEADER_TRANSMIT_REQUIRED,
+    ZS_RESP_BODY_CHUNK_TRANSMIT_REQUIRED,
+    ZS_RESP_BODY_DONE
 } ZITI_REQ_STATE;
 
 
@@ -79,9 +80,12 @@ typedef struct ngx_http_ziti_request_ctx_s {
     size_t                              buf_size;
 
     ngx_chain_t                        *out_bufs;
+    uv_sem_t                            out_bufs_sem;
+
     ngx_chain_t                       **last_out;
     
     ngx_buf_t                          *out_buf;
+
     ngx_buf_t                           cached;
     ngx_buf_t                           postponed;
     size_t                              avail_out;
@@ -108,6 +112,17 @@ typedef struct {
     ngx_http_ziti_loc_conf_t *zlcf;
 } ngx_http_ziti_req_complete_thread_ctx_t;
 
+typedef struct {
+    ngx_http_request_t *r;
+    ngx_http_ziti_request_ctx_t *request_ctx;
+    ngx_http_ziti_loc_conf_t *zlcf;
+} ngx_http_ziti_resp_chunk_thread_ctx_t;
+
+typedef struct {
+    ngx_http_request_t *r;
+    ngx_http_ziti_request_ctx_t *request_ctx;
+    ngx_http_ziti_loc_conf_t *zlcf;
+} ngx_http_ziti_resp_header_transmit_thread_ctx_t;
 
 
 ngx_int_t ngx_http_ziti_handler(ngx_http_request_t *r);

@@ -267,6 +267,10 @@ Known Issues
 Installation
 ============
 
+* on Mac
+
+* on Linux
+
 The installation steps are usually as simple as `./configure --with-threads --add-dynamic-module=../ngx_http_ziti && make && make install` (But you currently still need to install the ziti-sdk-c library manually, see [<https://github.com/openziti/ziti-sdk-c]>(https://github.com/openziti/ziti-sdk-c) for detailed instructions.
 
 ...to be written
