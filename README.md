@@ -267,13 +267,146 @@ Known Issues
 Installation
 ============
 
-* on Mac
+You will need to download source code from multiple places, and after doing so, you should have a directory structure that looks like the following:
 
-* on Linux
+```
+.
++--<TOP-LEVEL-DIR>
+    |-- nginx-1.19.8    # or whatever version you downloaded
+    |-- ngx_http_ziti_module
+    |-- ziti-sdk-c
+```
 
-The installation steps are usually as simple as `./configure --with-threads --add-dynamic-module=../ngx_http_ziti && make && make install` (But you currently still need to install the ziti-sdk-c library manually, see [<https://github.com/openziti/ziti-sdk-c]>(https://github.com/openziti/ziti-sdk-c) for detailed instructions.
 
-...to be written
+## Prerequisites
+
+Users of this module should have an understanding of what a Ziti Network
+is. To use this module, it is also required to have a functioning Ziti Network available.
+To learn more about what Ziti is and how to setup a Ziti Network, head over to [the official documentation
+site](https://openziti.github.io/ziti/overview.html).
+
+This module depends on the [ziti-sdk-c](https://github.com/openziti/ziti-sdk-c) so you must first download and build that.
+The [ziti-sdk-c](https://github.com/openziti/ziti-sdk-c) build requires [Cmake (3.12+)](https://cmake.org/install/),
+so make sure `cmake` is on your path or replace the following `cmake` commands with the fully qualified path to the binary.
+
+The `ziti-sdk-c` requires additional dependencies to be retreived. This is accomplished via the `git submodule` command. Fetch
+the third party libs with git recursively. The following commands can be used:
+
+```bash
+$ cd <where you cloned the ziti-sdk-c>
+$ git submodule update --init --recursive
+```
+
+The `ziti-sdk-c` should be built to use the `openssl` libraries. The following command can be used to install them:
+
+```bash
+$ sudo apt install libssl-dev
+```
+
+Building the `ziti-sdk-c` on Linux can then be accomplished with:
+
+```bash
+$ cd <where you cloned the sdk>
+$ mkdir build
+$ cd build
+$ cmake -DUSE_OPENSSL=ON .. && make
+```
+
+Building the `ziti-sdk-c` on Mac can be accomplished with:
+
+```bash
+$ cd <where you cloned the sdk>
+$ mkdir build
+$ cd build
+$ cmake -G Ninja -DUSE_OPENSSL=on -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl -DOPENSSL_LIBRARIES=/usr/local/opt/openssl/lib ..
+```
+
+After the `ziti-sdk-c` is built, now download the source code for `Nginx` itself. You can find it [here](http://nginx.org/en/download.html).
+
+Now that all source code has been downloaded, you should now have a directory structure that looks like the following:
+
+```
+.
++--<TOP-LEVEL-DIR>
+    |-- nginx-1.19.8    # or whatever version you downloaded
+    |-- ngx_http_ziti_module
+    |-- ziti-sdk-c
+```
+
+* Building the `ngx_http_ziti_module` on Linux can then be accomplished with:
+
+```bash
+$ cd <nginx src code dir>
+$ ./configure \
+    --with-compat \
+    --with-debug \
+    --with-threads \
+    --without-http_rewrite_module \
+    --without-http_gzip_module \
+    --add-dynamic-module=../ngx_http_ziti_module \
+    --with-ld-opt=" \
+        ../ziti-sdk-c/build/library/libziti.a \
+        ../ziti-sdk-c/build/_deps/libsodium-build/lib/libsodium.a  \
+        ../ziti-sdk-c/build/_deps/uv-mbed-build/libuv_mbed.a  \
+        ../ziti-sdk-c/build/_deps/libuv-build/libuv_a.a  \
+        -lssl  \
+        -lcrypto \
+        -lm" \
+    --with-cc-opt=" \
+        -Wno-unused-variable \
+        -Wno-unused-but-set-variable  \
+        -Wno-unused-value  \
+        -Wno-cast-function-type  \
+        -g -O0  \
+        -fno-strict-aliasing  \
+        -Wno-unused-function  \
+        -I/usr/local/include  \
+        -I../ziti-sdk-c/includes  \
+        -I../ziti-sdk-c/build/_deps/uv-mbed-src/include  \
+        -I../ziti-sdk-c/build/_deps/libuv-src/include  \
+        -I../ziti-sdk-c/build/_deps/http_parser-src  \
+        -I../ziti-sdk-c/build/_deps/uv_link-src/include"
+$ make
+```
+
+* Building the `ngx_http_ziti_module` on Mac can then be accomplished with:
+
+```bash
+$ cd <nginx src code dir>
+$./configure \
+    --with-compat \
+    --with-debug \
+    --with-threads \
+    --add-dynamic-module=../ngx_http_ziti_module \
+    --with-ld-opt=" \
+        ../ziti-sdk-c/build/library/libziti.a \
+        ../ziti-sdk-c/build/_deps/libuv-build/libuv_a.a \
+        ../ziti-sdk-c/build/_deps/libsodium-build/lib/libsodium.a \
+        ../ziti-sdk-c/build/_deps/uv-mbed-build/libuv_mbed.a \
+        /usr/local/Cellar/openssl@1.1/1.1.1j/lib/libssl.a  \
+        /usr/local/Cellar/openssl@1.1/1.1.1j/lib/libcrypto.a" \
+    --with-cc-opt=" \
+        -g -O0 \
+        -fno-strict-aliasing \
+        -fno-pie \
+        -Wno-unused-function \
+        -I/usr/local/include \
+        -I../ziti-sdk-c/includes \
+        -I../ziti-sdk-c/build/_deps/uv-mbed-src/include \
+        -I../ziti-sdk-c/deps/uv-mbed/deps/libuv/include \
+        -I../ziti-sdk-c/build/_deps/http_parser-src \
+        -I../ziti-sdk-c/build/_deps/uv_link-src/include \
+        -I../ziti-sdk-c/build/_deps/libuv-src/include"
+$ make
+```
+
+You should now have a `./objs/ngx_http_ziti_module.so` that you can copy into your Nginx's `modules` directory. This is typically accomplished with:
+
+```bash
+$ sudo make install
+```
+
+You should then update your nginx.conf file with suitable [Directives](#directives).
 
 
 [Back to TOC](#table-of-contents)
@@ -285,7 +418,8 @@ This module has been tested on Linux and Mac OS X. Reports of successful use on 
 
 The following versions of Nginx should work with this module:
 
-* 1.19.x    (last tested: 1.19.7)
+* 1.18.x
+* 1.19.x
 
 Earlier versions of Nginx may *not* work. We haven't tested.
 
