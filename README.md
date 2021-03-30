@@ -53,13 +53,16 @@ This document describes ngx_http_ziti_module [v0.1.1](https://github.com/openzit
 Requirements
 =======
 
-This module requres the `--with-threads` option for `./configure` for compilation.
+This module requires:
+
+*   [Ziti C SDK](https://github.com/openziti/ziti-sdk-c)
+*   The `--with-threads` option for `./configure` for compilation.
 
 You'll need to update the config file to match your build environment.
 
 This module assumes the existance of a named thread pool, `ziti`.  To get this module to run, you'll need to add a `thread_pool` directive to your nginx.conf file, e.g.
 
-```
+```nginx
 thread_pool ziti threads=32 max_queue=65536;
 ```
 
