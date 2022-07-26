@@ -5,12 +5,15 @@ on:
   issues:
   issue_comment:
   pull_request_review:
+    types: [submitted]
   pull_request_review_comment:
   pull_request:
+    types: [opened, reopened]
   push:
   fork:
   release:
     types: [released]
+  workflow_dispatch:
 
 jobs:
   ziti-webhook:
